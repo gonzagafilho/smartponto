@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  TENANT_MANAGER
+  EMPLOYEE
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  employees   Employee[]
+  locations   Location[]
+  worksites   WorkSite[]
+  timeEntries TimeEntry[]
+}
+
+model User {
+  id               String   @id @default(cuid())
+  tenantId         String?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id])
+  refreshTokenHash String?
+  name             String
+  email            String   @unique
+  passwordHash     String
+  role             UserRole @default(TENANT_ADMIN)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Employee {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name  String
+  cpf   String
+  phone String?
+  email String?
+
+  workStart  String // "08:00"
+  lunchStart String? // "12:00"
+  lunchEnd   String? // "13:00"
+  workEnd    String // "18:00"
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  timeEntries TimeEntry[]
+
+  @@unique([tenantId, cpf])
+  @@index([tenantId])
+}
+
+model Location {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name    String
+  lat     Float
+  lng     Float
+  radiusM Int    @default(100)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PunchType {
+  IN
+  LUNCH_OUT
+  LUNCH_IN
+  OUT
+}
+
+model WorkSite {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name          String
+  latitude      Float
+  longitude     Float
+  radiusM       Int     @default(150) // raio em metros
+  requireSelfie Boolean @default(true)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  timeEntries TimeEntry[]
+
+  @@index([tenantId])
+}
+
+model TimeEntry {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+
+  siteId String
+  site   WorkSite @relation(fields: [siteId], references: [id])
+
+  type PunchType
+
+  punchedAt DateTime @default(now())
+
+  latitude  Float
+  longitude Float
+  distanceM Int
+
+  selfieUrl String? // por enquanto string (depois S3/MinIO)
+
+  deviceId String?
+  deviceTs DateTime?
+
+  isOffline Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, employeeId, punchedAt])
+  @@index([tenantId, punchedAt])
+}
