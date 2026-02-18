@@ -50,20 +50,40 @@ export class EmployeesService {
     if (cpf && cpf.length !== 11) throw new BadRequestException('CPF inválido');
 
     try {
-      const updated = await this.prisma.employee.update({
-        where: { id },
-        data: {
-          name: data.name ?? undefined,
-          cpf: cpf ?? undefined,
-          phone: data.phone ?? undefined,
-          email: data.email ?? undefined,
-          workStart: data.workStart ?? undefined,
-          lunchStart: data.lunchStart ?? undefined,
-          lunchEnd: data.lunchEnd ?? undefined,
-          workEnd: data.workEnd ?? undefined,
-          isActive: data.isActive ?? undefined,
-        },
-      });
+      const updateData: any = {
+  name: data.name ?? undefined,
+  cpf: cpf ?? undefined,
+  phone: data.phone ?? undefined,
+  email: data.email ?? undefined,
+
+  workStart: data.workStart ?? undefined,
+  lunchStart: data.lunchStart ?? undefined,
+  lunchEnd: data.lunchEnd ?? undefined,
+  workEnd: data.workEnd ?? undefined,
+
+  isActive: data.isActive ?? undefined,
+
+  // ✅ permitir vincular escala no employee
+  scheduleId: data.scheduleId ?? undefined,
+  scheduleStartAt:
+    data.scheduleStartAt !== undefined
+      ? (data.scheduleStartAt ? new Date(data.scheduleStartAt) : null)
+      : undefined,
+};
+
+// ✅ update seguro por tenant (sem precisar @@unique composto)
+const result = await this.prisma.employee.updateMany({
+  where: { id, tenantId },
+  data: updateData,
+});
+
+if (result.count === 0) throw new NotFoundException('Funcionário não encontrado');
+
+const updated = await this.prisma.employee.findFirst({
+  where: { id, tenantId },
+});
+
+return { ok: true, employee: updated };
 
       return { ok: true, employee: updated };
     } catch (e: any) {

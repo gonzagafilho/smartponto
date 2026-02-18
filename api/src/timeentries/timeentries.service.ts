@@ -12,21 +12,22 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
   return Math.round(2 * R * Math.asin(Math.sqrt(a)));
 }
 
+// ✅ Datas por dia (UTC) pra ciclo ON/OFF
+function toUtcDateOnly(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+function diffDaysUtc(a: Date, b: Date) {
+  const ms = toUtcDateOnly(a).getTime() - toUtcDateOnly(b).getTime();
+  return Math.floor(ms / 86400000);
+}
+
 @Injectable()
 export class TimeentriesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async punch(tenantId: string, data: any) {
-    const {
-      employeeId,
-      siteId,
-      type,
-      latitude,
-      longitude,
-      selfieUrl,
-      deviceId,
-      deviceTs,
-    } = data || {};
+    const { employeeId, siteId, type, latitude, longitude, selfieUrl, deviceId, deviceTs } = data || {};
 
     if (!employeeId || !siteId || !type || latitude === undefined || longitude === undefined) {
       throw new BadRequestException('Obrigatório: employeeId, siteId, type, latitude, longitude');
@@ -48,10 +49,72 @@ export class TimeentriesService {
       throw new BadRequestException('deviceTs inválido (use ISO string ou timestamp)');
     }
 
+    // ✅ “agora” efetivo: online usa now(), offline usa deviceTs
+    const effectiveNow = computedIsOffline ? parsedDeviceTs! : new Date();
+
     const emp = await this.prisma.employee.findFirst({
       where: { id: employeeId, tenantId, isActive: true },
     });
     if (!emp) throw new NotFoundException('Funcionário inválido');
+
+    // ✅ Validação de escala (Schedule) — principalmente SHIFT_CYCLE (quinzenal etc.)
+    if (emp.scheduleId) {
+      const schedule = await this.prisma.schedule.findFirst({
+        where: { id: emp.scheduleId, tenantId, isActive: true },
+      });
+      if (!schedule) {
+        throw new BadRequestException('Escala vinculada inválida ou inativa');
+      }
+
+      // SHIFT_CYCLE: valida se hoje está dentro do ciclo ON/OFF
+      if (schedule.type === 'SHIFT_CYCLE') {
+        if (!emp.scheduleStartAt) {
+          throw new BadRequestException('Escala exige scheduleStartAt no funcionário');
+        }
+
+        const onDays = Number(schedule.onDays ?? 0);
+        const offDays = Number(schedule.offDays ?? 0);
+        const cycleLen = onDays + offDays;
+
+        if (!onDays || cycleLen <= 0) {
+          throw new BadRequestException('Escala SHIFT_CYCLE inválida: configure onDays/offDays');
+        }
+
+        const startAt = new Date(emp.scheduleStartAt);
+        if (Number.isNaN(startAt.getTime())) {
+          throw new BadRequestException('scheduleStartAt inválido no funcionário');
+        }
+
+        // anchorWeekday (0=Dom .. 6=Sáb): exige que startAt caia no dia âncora
+        if (schedule.anchorWeekday !== null && schedule.anchorWeekday !== undefined) {
+          const aw = Number(schedule.anchorWeekday);
+          const dow = startAt.getUTCDay();
+          if (dow !== aw) {
+            throw new BadRequestException(
+              `Escala inválida: scheduleStartAt deve cair no dia âncora (anchorWeekday=${aw}). ` +
+                `startAt está em dow=${dow}. Ajuste o startAt.`,
+            );
+          }
+        }
+
+        const daysSince = diffDaysUtc(effectiveNow, startAt);
+
+        // Ainda não começou
+        if (daysSince < 0) {
+          throw new BadRequestException('Escala ainda não iniciou para este funcionário');
+        }
+
+        const pos = daysSince % cycleLen;
+        const isWorkDay = pos < onDays;
+
+        if (!isWorkDay) {
+          throw new BadRequestException('Fora do dia de trabalho pela escala (SHIFT_CYCLE)');
+        }
+      }
+
+      // flexTime: hoje seu punch() não valida hora fixa, então não precisa mudar nada aqui.
+      // Quando você adicionar validação de horário, basta pular se schedule.flexTime === true.
+    }
 
     const site = await this.prisma.workSite.findFirst({
       where: { id: siteId, tenantId, isActive: true },
@@ -75,7 +138,8 @@ export class TimeentriesService {
     if (site.requireSelfie && !selfieUrl) {
       throw new BadRequestException('Selfie obrigatória neste local');
     }
-             // ✅ Regras: sequência + anti-duplicidade (online e offline)
+
+    // ✅ Regras: sequência + anti-duplicidade (online e offline)
     const last = await this.prisma.timeEntry.findFirst({
       where: { tenantId, employeeId },
       orderBy: { punchedAt: 'desc' },
@@ -86,18 +150,15 @@ export class TimeentriesService {
     const DUP_WINDOW_SEC = 120;
 
     if (last) {
-      const now = new Date();
+      const now = effectiveNow;
       const diffSec = Math.floor((now.getTime() - new Date(last.punchedAt).getTime()) / 1000);
 
       // 1) mesma batida muito rápida
       if (last.type === type && diffSec >= 0 && diffSec < DUP_WINDOW_SEC) {
-        throw new BadRequestException(
-          `Batida repetida muito rápida. Aguarde ${DUP_WINDOW_SEC - diffSec}s`,
-        );
+        throw new BadRequestException(`Batida repetida muito rápida. Aguarde ${DUP_WINDOW_SEC - diffSec}s`);
       }
 
       // 2) sequência completa: IN -> LUNCH_OUT -> LUNCH_IN -> OUT
-      // regra base: não aceitar sequência impossível
 
       // Se último foi OUT, novo ciclo só começa com IN
       if (last.type === 'OUT' && type !== 'IN') {
@@ -128,20 +189,22 @@ export class TimeentriesService {
     // ✅ Idempotência offline via constraint unique (quando existir no Prisma)
     try {
       const entry = await this.prisma.timeEntry.create({
-        data: {
-          tenantId,
-          employeeId,
-          siteId,
-          type,
-          latitude: lat,
-          longitude: lon,
-          distanceM: dist,
-          selfieUrl: selfieUrl ?? null,
-          deviceId: computedIsOffline ? String(deviceId) : null,
-          deviceTs: computedIsOffline ? parsedDeviceTs : null,
-          isOffline: computedIsOffline,
-        },
-      });
+  data: {
+    tenantId,
+    employeeId,
+    siteId,
+    type,
+    punchedAt: effectiveNow, // ✅ offline usa deviceTs, online usa agora
+    latitude: lat,
+    longitude: lon,
+    distanceM: dist,
+    selfieUrl: selfieUrl ?? null,
+    deviceId: computedIsOffline ? String(deviceId) : null,
+    deviceTs: computedIsOffline ? parsedDeviceTs : null,
+    isOffline: computedIsOffline,
+  },
+});
+
 
       return { ok: true, entry, deduped: false };
     } catch (e: any) {
