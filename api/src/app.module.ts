@@ -8,6 +8,8 @@ import { TenantModule } from './tenant/tenant.module';
 import { EmployeesModule } from './employees/employees.module';
 import { WorksitesModule } from './worksites/worksites.module';
 import { TimeentriesModule } from './timeentries/timeentries.module';
+import { UploadsModule } from "./uploads/uploads.module";
+import { SchedulesModule } from "./schedules/schedules.module";
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { TimeentriesModule } from './timeentries/timeentries.module';
     EmployeesModule,
     WorksitesModule,
     TimeentriesModule,
+    UploadsModule,
+    SchedulesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

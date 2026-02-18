@@ -14,6 +14,25 @@ enum UserRole {
   EMPLOYEE
 }
 
+/**
+ * Tipos de escala:
+ * - FIXED_DAILY: horário fixo por dia (ex: seg-sex 08-18)
+ * - SHIFT_CYCLE: ciclo de dias trabalhando/folgando (ex: 12x36, 24x72, 15x15)
+ * - WEEKLY_SHIFT: trabalha em dias específicos da semana (ex: só sáb/dom ou seg/qua/sex)
+ */
+enum ScheduleType {
+  FIXED_DAILY
+  SHIFT_CYCLE
+  WEEKLY_SHIFT
+}
+
+enum PunchType {
+  IN
+  LUNCH_OUT
+  LUNCH_IN
+  OUT
+}
+
 model Tenant {
   id        String   @id @default(cuid())
   name      String
@@ -21,11 +40,13 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users       User[]
-  employees   Employee[]
-  locations   Location[]
-  worksites   WorkSite[]
-  timeEntries TimeEntry[]
+  users             User[]
+  employees         Employee[]
+  locations         Location[]
+  worksites         WorkSite[]
+  timeEntries       TimeEntry[]
+  schedules         Schedule[]
+  employeeSchedules EmployeeSchedule[]
 }
 
 model User {
@@ -40,6 +61,8 @@ model User {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model Employee {
@@ -52,6 +75,11 @@ model Employee {
   phone String?
   email String?
 
+  /**
+   * Mantemos esses campos porque você já usa no cadastro atual.
+   * Para empresas grandes isso continua existindo e serve como "padrão" do funcionário
+   * mesmo que a escala seja por Schedule.
+   */
   workStart  String // "08:00"
   lunchStart String? // "12:00"
   lunchEnd   String? // "13:00"
@@ -64,7 +92,21 @@ model Employee {
 
   timeEntries TimeEntry[]
 
+  /**
+   * Escala padrão atual (vínculo direto).
+   * Você já tinha scheduleId + scheduleStartAt, então mantemos.
+   */
+  scheduleId      String?
+  schedule        Schedule? @relation(fields: [scheduleId], references: [id])
+  scheduleStartAt DateTime?
+
+  /**
+   * Histórico / trocas de escala no tempo (mais robusto).
+   */
+  schedules EmployeeSchedule[]
+
   @@unique([tenantId, cpf])
+  @@index([tenantId, scheduleId])
   @@index([tenantId])
 }
 
@@ -80,13 +122,8 @@ model Location {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-}
 
-enum PunchType {
-  IN
-  LUNCH_OUT
-  LUNCH_IN
-  OUT
+  @@index([tenantId])
 }
 
 model WorkSite {
@@ -97,7 +134,7 @@ model WorkSite {
   name          String
   latitude      Float
   longitude     Float
-  radiusM       Int     @default(150) // raio em metros
+  radiusM       Int     @default(150)
   requireSelfie Boolean @default(true)
 
   isActive Boolean @default(true)
@@ -108,6 +145,106 @@ model WorkSite {
   timeEntries TimeEntry[]
 
   @@index([tenantId])
+}
+
+/**
+ * ✅ ESCALAS (único model Schedule)
+ * Suporta:
+ * - FIXED_DAILY -> horário fixo + dias da semana
+ * - WEEKLY_SHIFT -> dias da semana + (opcional) horário
+ * - SHIFT_CYCLE -> onDays/offDays (12x36 vira equivalente em dias/horas depois, mas aqui deixamos em dias)
+ * ✅ Caso especial: QUINZENAL FLEX (15 dias sim / 15 dias não, entra sábado e sai domingo em horário livre)
+ * Use:
+ * - type = SHIFT_CYCLE
+ * - onDays=2 (sab/dom) ou 1 (se quiser contar só sábado como início)
+ * - offDays=13 (pra fechar 15 em 15, dependendo da regra)
+ * - flexTime=true
+ * - anchorWeekday=6 (sábado)
+ * - maxSpanHours opcional
+ */
+model Schedule {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name String
+  type ScheduleType @default(FIXED_DAILY)
+
+  // ====== Horários (para FIXED_DAILY / WEEKLY_SHIFT) ======
+  workStart  String? // "08:00"
+  lunchStart String? // "12:00"
+  lunchEnd   String? // "13:00"
+  workEnd    String? // "18:00"
+
+  /**
+   * Dias da semana (0=Dom, 1=Seg ... 6=Sáb)
+   * Ex FIXED_DAILY padrão: [1,2,3,4,5]
+   * Ex WEEKLY_SHIFT plantão: [6,0] (sábado e domingo)
+   */
+  daysOfWeek Int[] @default([])
+
+  // ====== SHIFT_CYCLE (12x36, 24x72, 15x15...) ======
+  onDays  Int?
+  offDays Int?
+
+  /**
+   * Se true, NÃO exige horário fixo (workStart/workEnd).
+   * Usa só sequência de batidas e validação do local/selfie.
+   */
+  flexTime Boolean @default(false)
+
+  /**
+   * Regras extras pra flex/quincenal:
+   * anchorWeekday: dia “âncora” que define início do plantão (ex: 6=sábado)
+   * maxSpanHours: limita duração máxima do plantão (ex: 36h ou 48h)
+   */
+  anchorWeekday Int?
+  maxSpanHours  Int?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relação com Employee por scheduleId
+  employees Employee[]
+
+  // histórico/escala por período
+  employeeSchedules EmployeeSchedule[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, type])
+}
+
+model EmployeeSchedule {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+
+  scheduleId String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id])
+
+  /**
+   * Quando essa escala começa a valer para o funcionário.
+   * Para "quinzenal", você define a primeira data de início.
+   */
+  startAt DateTime
+
+  /**
+   * Quando deixa de valer (se trocar escala depois)
+   */
+  endAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, employeeId, scheduleId, startAt], name: "uniq_employee_schedule_start")
+  @@index([tenantId, employeeId])
+  @@index([tenantId, scheduleId])
 }
 
 model TimeEntry {
@@ -129,7 +266,7 @@ model TimeEntry {
   longitude Float
   distanceM Int
 
-  selfieUrl String? // por enquanto string (depois S3/MinIO)
+  selfieUrl String?
 
   deviceId String?
   deviceTs DateTime?
@@ -139,6 +276,7 @@ model TimeEntry {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([tenantId, employeeId, deviceId, deviceTs, type], name: "uniq_offline_punch")
   @@index([tenantId, employeeId, punchedAt])
   @@index([tenantId, punchedAt])
 }

@@ -1,12 +1,14 @@
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+import * as express from "express";
+import { join } from "path";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  const port = Number(process.env.PORT || 3011);
-  await app.listen(port, '0.0.0.0');
+  // ✅ Serve arquivos estáticos: /uploads/...
+  app.use("/uploads", express.static(join(process.cwd(), "uploads")));
 
-  console.log(`✅ SmartPonto API rodando na porta ${port}`);
+  await app.listen(3011);
 }
 bootstrap();

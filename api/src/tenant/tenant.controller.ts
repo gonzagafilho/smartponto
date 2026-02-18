@@ -1,17 +1,23 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
-import { TenantService } from './tenant.service';
-import { JwtGuard } from '../auth/jwt.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { Body, Controller, Post, UseGuards } from "@nestjs/common";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { TenantService } from "./tenant.service";
 
-@Controller('tenants')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
+@Controller("tenants")
 export class TenantController {
   constructor(private readonly tenantService: TenantService) {}
 
   @Post()
-  @Roles('SUPER_ADMIN')
-  create(@Body() body: any) {
-    return this.tenantService.createTenant(body);
+  async create(@Body() body: any) {
+    // aceita ambos pra não quebrar: name ou tenantName
+    const name = body.name ?? body.tenantName;
+
+    return this.tenantService.createTenant({
+      name,
+      slug: body.slug,
+      adminName: body.adminName,
+      adminEmail: body.adminEmail,
+      adminPassword: body.adminPassword,
+    });
   }
 }
