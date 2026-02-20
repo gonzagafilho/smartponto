@@ -96,9 +96,6 @@ model Employee {
    * Escala padrão atual (vínculo direto).
    * Você já tinha scheduleId + scheduleStartAt, então mantemos.
    */
-  scheduleId      String?
-  schedule        Schedule? @relation(fields: [scheduleId], references: [id])
-  scheduleStartAt DateTime?
 
   /**
    * Histórico / trocas de escala no tempo (mais robusto).
@@ -106,7 +103,6 @@ model Employee {
   schedules EmployeeSchedule[]
 
   @@unique([tenantId, cpf])
-  @@index([tenantId, scheduleId])
   @@index([tenantId])
 }
 
@@ -205,9 +201,6 @@ model Schedule {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  // relação com Employee por scheduleId
-  employees Employee[]
 
   // histórico/escala por período
   employeeSchedules EmployeeSchedule[]

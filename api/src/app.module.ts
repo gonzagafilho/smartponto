@@ -10,7 +10,10 @@ import { WorksitesModule } from './worksites/worksites.module';
 import { TimeentriesModule } from './timeentries/timeentries.module';
 import { UploadsModule } from "./uploads/uploads.module";
 import { SchedulesModule } from "./schedules/schedules.module";
+import { EmployeeSchedulesModule } from './employee-schedules/employee-schedules.module';
 
+import { ReportsModule } from "./reports/reports.module";
+import { DashboardModule } from "./dashboard/dashboard.module";
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -22,6 +25,10 @@ import { SchedulesModule } from "./schedules/schedules.module";
     TimeentriesModule,
     UploadsModule,
     SchedulesModule,
+    EmployeeSchedulesModule,
+      ReportsModule,
+    DashboardModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -11,8 +11,6 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return Math.round(2 * R * Math.asin(Math.sqrt(a)));
 }
-
-// ✅ Datas por dia (UTC) pra ciclo ON/OFF
 function toUtcDateOnly(d: Date) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
@@ -20,6 +18,10 @@ function toUtcDateOnly(d: Date) {
 function diffDaysUtc(a: Date, b: Date) {
   const ms = toUtcDateOnly(a).getTime() - toUtcDateOnly(b).getTime();
   return Math.floor(ms / 86400000);
+}
+function jsDowTo0Mon6Sun(dow: number) {
+  // JS: 0=Sun..6=Sat  ->  0=Mon..6=Sun
+  return (dow + 6) % 7;
 }
 
 @Injectable()
@@ -56,65 +58,20 @@ export class TimeentriesService {
       where: { id: employeeId, tenantId, isActive: true },
     });
     if (!emp) throw new NotFoundException('Funcionário inválido');
+    // ✅ Escala SaaS: pega vínculo ativo por período (EmployeeSchedule)
+    const empSched = await this.prisma.employeeSchedule.findFirst({
+      where: {
+        tenantId,
+        employeeId,
+        startAt: { lte: effectiveNow },
+        OR: [{ endAt: null }, { endAt: { gte: effectiveNow } }],
+      },
+      orderBy: { startAt: 'desc' },
+      include: { schedule: true },
+    });
 
-    // ✅ Validação de escala (Schedule) — principalmente SHIFT_CYCLE (quinzenal etc.)
-    if (emp.scheduleId) {
-      const schedule = await this.prisma.schedule.findFirst({
-        where: { id: emp.scheduleId, tenantId, isActive: true },
-      });
-      if (!schedule) {
-        throw new BadRequestException('Escala vinculada inválida ou inativa');
-      }
-
-      // SHIFT_CYCLE: valida se hoje está dentro do ciclo ON/OFF
-      if (schedule.type === 'SHIFT_CYCLE') {
-        if (!emp.scheduleStartAt) {
-          throw new BadRequestException('Escala exige scheduleStartAt no funcionário');
-        }
-
-        const onDays = Number(schedule.onDays ?? 0);
-        const offDays = Number(schedule.offDays ?? 0);
-        const cycleLen = onDays + offDays;
-
-        if (!onDays || cycleLen <= 0) {
-          throw new BadRequestException('Escala SHIFT_CYCLE inválida: configure onDays/offDays');
-        }
-
-        const startAt = new Date(emp.scheduleStartAt);
-        if (Number.isNaN(startAt.getTime())) {
-          throw new BadRequestException('scheduleStartAt inválido no funcionário');
-        }
-
-        // anchorWeekday (0=Dom .. 6=Sáb): exige que startAt caia no dia âncora
-        if (schedule.anchorWeekday !== null && schedule.anchorWeekday !== undefined) {
-          const aw = Number(schedule.anchorWeekday);
-          const dow = startAt.getUTCDay();
-          if (dow !== aw) {
-            throw new BadRequestException(
-              `Escala inválida: scheduleStartAt deve cair no dia âncora (anchorWeekday=${aw}). ` +
-                `startAt está em dow=${dow}. Ajuste o startAt.`,
-            );
-          }
-        }
-
-        const daysSince = diffDaysUtc(effectiveNow, startAt);
-
-        // Ainda não começou
-        if (daysSince < 0) {
-          throw new BadRequestException('Escala ainda não iniciou para este funcionário');
-        }
-
-        const pos = daysSince % cycleLen;
-        const isWorkDay = pos < onDays;
-
-        if (!isWorkDay) {
-          throw new BadRequestException('Fora do dia de trabalho pela escala (SHIFT_CYCLE)');
-        }
-      }
-
-      // flexTime: hoje seu punch() não valida hora fixa, então não precisa mudar nada aqui.
-      // Quando você adicionar validação de horário, basta pular se schedule.flexTime === true.
-    }
+    const schedule = empSched?.schedule ?? null;
+    const scheduleStartAt = empSched?.startAt ?? null;
 
     const site = await this.prisma.workSite.findFirst({
       where: { id: siteId, tenantId, isActive: true },
@@ -137,6 +94,42 @@ export class TimeentriesService {
 
     if (site.requireSelfie && !selfieUrl) {
       throw new BadRequestException('Selfie obrigatória neste local');
+    }
+    // ✅ Validar escala (SHIFT_CYCLE) usando effectiveNow (offline respeita deviceTs)
+    if (!schedule || !scheduleStartAt) {
+      throw new BadRequestException('Funcionário sem escala vinculada (EmployeeSchedule)');
+    }
+
+    if (schedule.type === 'SHIFT_CYCLE') {
+      const anchor = schedule.anchorWeekday;
+      if (anchor !== null && anchor !== undefined) {
+        const startDow = new Date(scheduleStartAt).getUTCDay(); // 0=Dom..6=Sáb
+        if (startDow !== anchor) {
+          throw new BadRequestException(
+            `Escala inválida: startAt deve cair no dia âncora (anchorWeekday=${anchor}). startAt está em dow=${startDow}. Ajuste o startAt.`,
+          );
+        }
+      }
+
+      const onDays = Number(schedule.onDays ?? 0);
+      const offDays = Number(schedule.offDays ?? 0);
+      const cycle = onDays + offDays;
+
+      if (cycle <= 0 || onDays <= 0) {
+        throw new BadRequestException('Escala inválida: onDays/offDays');
+      }
+
+      const daysSinceStart = diffDaysUtc(effectiveNow, new Date(scheduleStartAt));
+      if (daysSinceStart < 0) {
+        throw new BadRequestException('Escala inválida: startAt no futuro');
+      }
+
+      const dayInCycle = daysSinceStart % cycle;
+      const isWorkingDay = dayInCycle < onDays;
+
+      if (!isWorkingDay) {
+        throw new BadRequestException('Fora do dia de trabalho pela escala (SHIFT_CYCLE)');
+      }
     }
 
     // ✅ Regras: sequência + anti-duplicidade (online e offline)
@@ -189,21 +182,21 @@ export class TimeentriesService {
     // ✅ Idempotência offline via constraint unique (quando existir no Prisma)
     try {
       const entry = await this.prisma.timeEntry.create({
-  data: {
-    tenantId,
-    employeeId,
-    siteId,
-    type,
-    punchedAt: effectiveNow, // ✅ offline usa deviceTs, online usa agora
-    latitude: lat,
-    longitude: lon,
-    distanceM: dist,
-    selfieUrl: selfieUrl ?? null,
-    deviceId: computedIsOffline ? String(deviceId) : null,
-    deviceTs: computedIsOffline ? parsedDeviceTs : null,
-    isOffline: computedIsOffline,
-  },
-});
+        data: {
+          tenantId,
+          employeeId,
+          siteId,
+          type,
+          punchedAt: effectiveNow, // ✅ offline usa deviceTs, online usa agora
+          latitude: lat,
+          longitude: lon,
+          distanceM: dist,
+          selfieUrl: selfieUrl ?? null,
+          deviceId: computedIsOffline ? String(deviceId) : null,
+          deviceTs: computedIsOffline ? parsedDeviceTs : null,
+          isOffline: computedIsOffline,
+        },
+      });
 
 
       return { ok: true, entry, deduped: false };

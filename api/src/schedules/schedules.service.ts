@@ -254,15 +254,23 @@ export class SchedulesService {
   async remove(tenantId: string, id: string) {
     const found = await this.prisma.schedule.findFirst({ where: { id, tenantId } });
     if (!found) throw new NotFoundException("Escala não encontrada");
-
-    const inUse = await this.prisma.employee.findFirst({
-      where: { tenantId, scheduleId: id },
+  
+    const inUse = await this.prisma.employeeSchedule.findFirst({
+      where: {
+        tenantId,
+        scheduleId: id,
+        endAt: null, // vínculo ativo
+      },
       select: { id: true },
     });
-    if (inUse) throw new BadRequestException("Não pode apagar: existe funcionário usando esta escala");
-
+  
+    if (inUse) {
+      throw new BadRequestException(
+        "Não pode apagar: existe vínculo de funcionário (EmployeeSchedule) usando esta escala",
+      );
+    }
+  
     await this.prisma.schedule.delete({ where: { id } });
     return { ok: true };
   }
 }
-
