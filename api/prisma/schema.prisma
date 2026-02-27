@@ -34,19 +34,24 @@ enum PunchType {
 }
 
 model Tenant {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String          @id @default(cuid())
+  name             String
+  slug             String          @unique
+  isActive         Boolean         @default(true) // ✅ recomendado
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  refreshTokenHash String?
+  refreshTokenExp  DateTime?
+  settings         TenantSettings?
 
   users             User[]
   employees         Employee[]
   locations         Location[]
-  worksites         WorkSite[]
+  worksites         Worksite[]
   timeEntries       TimeEntry[]
   schedules         Schedule[]
   employeeSchedules EmployeeSchedule[]
+  monthlySummaries  MonthlySummary[]
 }
 
 model User {
@@ -66,9 +71,9 @@ model User {
 }
 
 model Employee {
-  id       String @id @default(cuid())
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  id       String  @id @default(cuid())
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id])
 
   name  String
   cpf   String
@@ -100,7 +105,8 @@ model Employee {
   /**
    * Histórico / trocas de escala no tempo (mais robusto).
    */
-  schedules EmployeeSchedule[]
+  schedules        EmployeeSchedule[]
+  monthlySummaries MonthlySummary[]
 
   @@unique([tenantId, cpf])
   @@index([tenantId])
@@ -122,22 +128,21 @@ model Location {
   @@index([tenantId])
 }
 
-model WorkSite {
+model Worksite {
   id       String @id @default(cuid())
   tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   name          String
+  address       String?
   latitude      Float
   longitude     Float
-  radiusM       Int     @default(150)
+  radiusMeters  Int     @default(200)
   requireSelfie Boolean @default(true)
+  isActive      Boolean @default(true)
 
-  isActive Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
   timeEntries TimeEntry[]
 
   @@index([tenantId])
@@ -249,7 +254,7 @@ model TimeEntry {
   employee   Employee @relation(fields: [employeeId], references: [id])
 
   siteId String
-  site   WorkSite @relation(fields: [siteId], references: [id])
+  site   Worksite @relation(fields: [siteId], references: [id])
 
   type PunchType
 
@@ -272,4 +277,78 @@ model TimeEntry {
   @@unique([tenantId, employeeId, deviceId, deviceTs, type], name: "uniq_offline_punch")
   @@index([tenantId, employeeId, punchedAt])
   @@index([tenantId, punchedAt])
+}
+
+model SystemAdmin {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum TargetMode {
+  DAILY
+  MONTHLY
+}
+
+enum LunchDeductMode {
+  BY_PUNCH
+  FIXED
+}
+
+model TenantSettings {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  timezone String @default("America/Sao_Paulo")
+
+  targetMode           TargetMode @default(MONTHLY)
+  targetDailyMinutes   Int        @default(480) // 8h
+  targetMonthlyMinutes Int        @default(13200) // 220h
+
+  bankEnabled Boolean @default(false)
+
+  lunchDeductMode   LunchDeductMode @default(BY_PUNCH)
+  fixedLunchMinutes Int             @default(60)
+
+  roundingMinutes Int @default(0) // 0 = sem arredondamento
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model MonthlySummary {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  yearMonth String // "2026-02"
+
+  targetMinutes Int
+  workedMinutes Int
+  extraMinutes  Int
+  debitMinutes  Int
+
+  daysWorked           Int
+  inconsistenciesCount Int
+
+  detailsJson Json?
+  generatedAt DateTime  @default(now())
+  closedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, employeeId, yearMonth], name: "uniq_monthly_summary")
+  @@index([tenantId, yearMonth])
+  @@index([tenantId, employeeId, yearMonth])
 }

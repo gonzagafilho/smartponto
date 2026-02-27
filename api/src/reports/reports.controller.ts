@@ -1,6 +1,6 @@
 import { Controller, Get, Query, Req, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
-import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { ReportsService } from "./reports.service";
 
 @UseGuards(JwtAuthGuard)
@@ -28,35 +28,13 @@ export class ReportsController {
     if ((format || "").toLowerCase() === "csv") {
         const lines: string[] = [];
         lines.push("date,firstIn,lastOut,workedHHMM,punchesCount");
-  
-        const START = new Set(["IN", "LUNCH_IN"]);
-        const END = new Set(["OUT", "LUNCH_OUT"]);
-  
+      
         for (const d of result.days) {
-          // pega todos os punches do dia (já vem em ISO string)
-          const punches = (d.punches || []).map((p) => ({
-            type: p.type,
-            punchedAt: p.punchedAt,
-          }));
-  
-          // firstIn = primeiro START; fallback: primeiro punch
-          const firstInObj =
-            punches.find((p) => START.has(p.type)) || punches[0] || null;
-  
-          // lastOut = último END; fallback: último punch
-          const lastOutObj =
-            [...punches].reverse().find((p) => END.has(p.type)) ||
-            punches[punches.length - 1] ||
-            null;
-  
-          const firstIn = firstInObj ? firstInObj.punchedAt : "";
-          const lastOut = lastOutObj ? lastOutObj.punchedAt : "";
-  
-          lines.push(
-            `${d.date},${firstIn},${lastOut},${d.workedHHMM},${punches.length}`,
-          );
+          const firstIn = d.punches[0]?.punchedAt || "";
+          const lastOut = d.punches[d.punches.length - 1]?.punchedAt || "";
+          lines.push(`${d.date},${firstIn},${lastOut},${d.workedHHMM},${d.punches.length}`);
         }
-  
+      
         const csv = lines.join("\n");
         res.setHeader("Content-Type", "text/csv; charset=utf-8");
         res.setHeader(
@@ -64,7 +42,7 @@ export class ReportsController {
           `attachment; filename="timesheet_${employeeId}_${from}_to_${to}.csv"`,
         );
         return res.status(200).send(csv);
-      }
+      }      
   
     }
 }
