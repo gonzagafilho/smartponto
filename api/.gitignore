@@ -7,3 +7,17 @@ node_modules
 dist
 .env
 *.bak
+
+# local backups / temp
+_db_backups/
+*.bak
+*.bak.*
+*.tmp
+
+# uploads
+uploads/
+uploads/**
+
+# env
+.env
+.env.*
