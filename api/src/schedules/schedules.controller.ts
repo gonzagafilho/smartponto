@@ -1,11 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
-import { JwtGuard } from "../auth/jwt.guard";
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { Roles } from "../common/decorators/roles.decorator";
 import { SchedulesService } from "./schedules.service";
 
 @Controller("schedules")
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class SchedulesController {
   constructor(private readonly svc: SchedulesService) {}
 

@@ -1,11 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { WorksitesService } from './worksites.service';
-import { JwtGuard } from '../auth/jwt.guard';
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('worksites')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 export class WorksitesController {
   constructor(private readonly svc: WorksitesService) {}
 

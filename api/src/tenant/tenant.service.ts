@@ -1,81 +1,78 @@
-import { Injectable, BadRequestException } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import * as bcrypt from "bcrypt";
-
-function toSlug(s: string) {
-  return (s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function isEmail(v: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || "");
-}
+import * as bcrypt from "bcryptjs";
 
 @Injectable()
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createTenant(data: {
+  // ✅ LISTAR TODOS OS TENANTS (admin master)
+  async listTenants() {
+    const tenants = await this.prisma.tenant.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    return { ok: true, tenants };
+  }
+
+  // ✅ CRIA TENANT + ADMIN DO TENANT
+  async createTenant(input: {
     name: string;
     slug?: string;
     adminName: string;
     adminEmail: string;
     adminPassword: string;
   }) {
-    const name = (data.name || "").trim();
-    if (!name) throw new BadRequestException("name (ou tenantName) é obrigatório");
+    const slug =
+      input.slug ||
+      input.name
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "");
 
-    const slug = (data.slug || "").trim() || toSlug(name);
-    if (!slug) throw new BadRequestException("slug inválido");
+    // email admin não pode existir
+    const existsUser = await this.prisma.user.findUnique({
+      where: { email: input.adminEmail },
+      select: { id: true },
+    });
+    if (existsUser) throw new BadRequestException("adminEmail já existe");
 
-    const adminName = (data.adminName || "").trim();
-    if (!adminName) throw new BadRequestException("adminName é obrigatório");
-
-    const adminEmail = (data.adminEmail || "").trim().toLowerCase();
-    if (!adminEmail) throw new BadRequestException("adminEmail é obrigatório");
-    if (!isEmail(adminEmail)) throw new BadRequestException("adminEmail inválido");
-
-    const adminPassword = data.adminPassword || "";
-    if (!adminPassword) throw new BadRequestException("adminPassword é obrigatório");
-    if (adminPassword.length < 6) {
-      throw new BadRequestException("adminPassword deve ter no mínimo 6 caracteres");
-    }
-
-    const exists = await this.prisma.tenant.findUnique({
+    // slug não pode existir
+    const existsSlug = await this.prisma.tenant.findUnique({
       where: { slug },
       select: { id: true },
     });
-    if (exists) throw new BadRequestException("Slug já existe");
+    if (existsSlug) throw new BadRequestException("slug já existe");
 
-    const emailExists = await this.prisma.user.findUnique({
-      where: { email: adminEmail },
-      select: { id: true },
-    });
-    if (emailExists) throw new BadRequestException("adminEmail já está em uso");
+    const passwordHash = await bcrypt.hash(input.adminPassword, 10);
 
-    const hash = await bcrypt.hash(adminPassword, 10);
+    const { tenant, admin } = await this.prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: { name: input.name, slug },
+      });
 
-    const tenant = await this.prisma.tenant.create({
-      data: {
-        name,
-        slug,
-        users: {
-          create: {
-            name: adminName,
-            email: adminEmail,
-            passwordHash: hash,
-            role: "TENANT_ADMIN",
-          },
+      const admin = await tx.user.create({
+        data: {
+          tenantId: tenant.id,
+          name: input.adminName,
+          email: input.adminEmail,
+          passwordHash,
+          role: "TENANT_ADMIN",
         },
-      },
-      include: { users: true },
+        select: {
+          id: true,
+          tenantId: true,
+          name: true,
+          email: true,
+          role: true,
+          createdAt: true,
+        },
+      });
+
+      return { tenant, admin };
     });
 
-    return { ok: true, tenant };
+    return { ok: true, tenant, admin };
   }
 }

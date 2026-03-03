@@ -1,11 +1,11 @@
 import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { TimeentriesService } from './timeentries.service';
-import { JwtGuard } from '../auth/jwt.guard';
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('timeentries')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 export class TimeentriesController {
   constructor(private readonly svc: TimeentriesService) {}
 

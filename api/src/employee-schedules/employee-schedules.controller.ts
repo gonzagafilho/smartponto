@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { EmployeeSchedulesService } from './employee-schedules.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { RolesGuard } from '../common/guards/roles.guard';
 
 @UseGuards(JwtAuthGuard, RolesGuard)

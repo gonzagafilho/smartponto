@@ -6,7 +6,7 @@ export class WorksitesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(tenantId: string) {
-    return this.prisma.workSite.findMany({
+    return this.prisma.worksite.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
     });
@@ -17,13 +17,13 @@ export class WorksitesService {
       throw new BadRequestException('Campos obrigatórios: name, latitude, longitude');
     }
 
-    return this.prisma.workSite.create({
+    return this.prisma.worksite.create({
       data: {
         tenantId,
         name: data.name,
         latitude: Number(data.latitude),
         longitude: Number(data.longitude),
-        radiusM: data.radiusM ?? 150,
+        radiusMeters: data.radiusMeters ?? 150,
         requireSelfie: data.requireSelfie ?? true,
         isActive: data.isActive ?? true,
       },
@@ -31,16 +31,16 @@ export class WorksitesService {
   }
 
   async update(tenantId: string, id: string, data: any) {
-    const site = await this.prisma.workSite.findFirst({ where: { id, tenantId } });
+    const site = await this.prisma.worksite.findFirst({ where: { id, tenantId } });
     if (!site) throw new NotFoundException('Local não encontrado');
 
-    return this.prisma.workSite.update({
+    return this.prisma.worksite.update({
       where: { id },
       data: {
         name: data.name ?? undefined,
         latitude: data.latitude !== undefined ? Number(data.latitude) : undefined,
         longitude: data.longitude !== undefined ? Number(data.longitude) : undefined,
-        radiusM: data.radiusM ?? undefined,
+        radiusMeters: data.radiusMeters ?? undefined,
         requireSelfie: data.requireSelfie ?? undefined,
         isActive: data.isActive ?? undefined,
       },
@@ -48,10 +48,10 @@ export class WorksitesService {
   }
 
   async remove(tenantId: string, id: string) {
-    const site = await this.prisma.workSite.findFirst({ where: { id, tenantId } });
+    const site = await this.prisma.worksite.findFirst({ where: { id, tenantId } });
     if (!site) throw new NotFoundException('Local não encontrado');
 
-    await this.prisma.workSite.delete({ where: { id } });
+    await this.prisma.worksite.delete({ where: { id } });
     return { ok: true };
   }
 }

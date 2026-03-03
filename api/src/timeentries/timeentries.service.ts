@@ -73,7 +73,7 @@ export class TimeentriesService {
     const schedule = empSched?.schedule ?? null;
     const scheduleStartAt = empSched?.startAt ?? null;
 
-    const site = await this.prisma.workSite.findFirst({
+    const site = await this.prisma.worksite.findFirst({
       where: { id: siteId, tenantId, isActive: true },
     });
     if (!site) throw new NotFoundException('Local inválido');
@@ -86,51 +86,36 @@ export class TimeentriesService {
 
     const dist = haversineMeters(lat, lon, site.latitude, site.longitude);
 
-    if (dist > site.radiusM) {
+    if (dist > site.radiusMeters) {
       throw new BadRequestException(
-        `Fora do local permitido. Distância: ${dist}m (limite ${site.radiusM}m)`,
+        `Fora do local permitido. Distância: ${dist}m (limite ${site.radiusMeters}m)`,
       );
     }
 
     if (site.requireSelfie && !selfieUrl) {
       throw new BadRequestException('Selfie obrigatória neste local');
     }
-    // ✅ Validar escala (SHIFT_CYCLE) usando effectiveNow (offline respeita deviceTs)
-    if (!schedule || !scheduleStartAt) {
-      throw new BadRequestException('Funcionário sem escala vinculada (EmployeeSchedule)');
-    }
+    // ℹ️ Escala NÃO pode bloquear batida.
+// Escala serve para apuração/relatórios (horas normais, extras, banco de horas).
+// Por isso, NÃO fazemos throw aqui. Só validamos geofence/selfie/seq/duplicidade.
 
-    if (schedule.type === 'SHIFT_CYCLE') {
-      const anchor = schedule.anchorWeekday;
-      if (anchor !== null && anchor !== undefined) {
-        const startDow = new Date(scheduleStartAt).getUTCDay(); // 0=Dom..6=Sáb
-        if (startDow !== anchor) {
-          throw new BadRequestException(
-            `Escala inválida: startAt deve cair no dia âncora (anchorWeekday=${anchor}). startAt está em dow=${startDow}. Ajuste o startAt.`,
-          );
-        }
-      }
+const hasSchedule = !!schedule && !!scheduleStartAt;
 
-      const onDays = Number(schedule.onDays ?? 0);
-      const offDays = Number(schedule.offDays ?? 0);
-      const cycle = onDays + offDays;
+// Se quiser, mais pra frente podemos registrar "flags" (ex: fora do dia) no TimeEntry.
+// Por enquanto, não bloqueia e não cria dependências no schema.
+if (hasSchedule && schedule!.type === 'SHIFT_CYCLE') {
+  // Mantemos o cálculo como referência (sem bloquear)
+  const onDays = Number(schedule!.onDays ?? 0);
+  const offDays = Number(schedule!.offDays ?? 0);
+  const cycle = onDays + offDays;
 
-      if (cycle <= 0 || onDays <= 0) {
-        throw new BadRequestException('Escala inválida: onDays/offDays');
-      }
-
-      const daysSinceStart = diffDaysUtc(effectiveNow, new Date(scheduleStartAt));
-      if (daysSinceStart < 0) {
-        throw new BadRequestException('Escala inválida: startAt no futuro');
-      }
-
-      const dayInCycle = daysSinceStart % cycle;
-      const isWorkingDay = dayInCycle < onDays;
-
-      if (!isWorkingDay) {
-        throw new BadRequestException('Fora do dia de trabalho pela escala (SHIFT_CYCLE)');
-      }
-    }
+  if (cycle > 0 && onDays > 0) {
+    const daysSinceStart = diffDaysUtc(effectiveNow, new Date(scheduleStartAt!));
+    // daysSinceStart < 0 (startAt futuro) também não bloqueia no modo universal
+    // Apenas deixamos para apuração/alertas no painel depois.
+    void daysSinceStart;
+  }
+}
 
     // ✅ Regras: sequência + anti-duplicidade (online e offline)
     const last = await this.prisma.timeEntry.findFirst({

@@ -15,7 +15,7 @@ import { extname } from "path";
 import * as fs from "fs";
 
 import { UploadsService } from "./uploads.service";
-import { JwtAuthGuard } from "../auth/jwt-auth.guard"; // ✅ usar o que já existe
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";// ✅ usar o que já existe
 
 
 function safeExt(originalname: string) {
