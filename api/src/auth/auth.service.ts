@@ -49,7 +49,7 @@ export class AuthService {
   }
 
   // =========================
-  // LOGIN
+  // LOGIN (ADMIN)
   // =========================
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({
@@ -97,11 +97,9 @@ export class AuthService {
     // 6) salvar hash do refresh no banco ✅
     const refreshTokenHash = await this.hashToken(refreshToken);
     await this.prisma.user.update({
-  where: { id: user.id },
-  data: {
-    refreshTokenHash: refreshTokenHash,
-   },
-  });
+      where: { id: user.id },
+      data: { refreshTokenHash },
+    });
 
     return {
       ok: true,
@@ -122,7 +120,71 @@ export class AuthService {
   }
 
   // =========================
-  // REFRESH
+  // EMPLOYEE LOGIN (CPF)
+  // =========================
+  async employeeLogin(cpfRaw: string) {
+    const cpf = String(cpfRaw || "").replace(/\D/g, "");
+    if (cpf.length !== 11) throw new UnauthorizedException("CPF inválido");
+
+    const emp = await this.prisma.employee.findFirst({
+      where: { cpf },
+      select: {
+        id: true,
+        tenantId: true,
+        name: true,
+        email: true,
+        isActive: true,
+        refreshTokenHash: true,
+      },
+    });
+
+    if (!emp) throw new UnauthorizedException("CPF não encontrado");
+    if (!emp.isActive) throw new ForbiddenException("Funcionário desativado");
+    if (!emp.tenantId)
+      throw new UnauthorizedException("Funcionário sem tenant vinculado");
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: emp.tenantId },
+      select: { isActive: true, slug: true, name: true },
+    });
+
+    if (!tenant) throw new UnauthorizedException("Tenant não encontrado");
+    if (!tenant.isActive)
+      throw new ForbiddenException("Tenant desativado. Fale com o suporte.");
+
+    const payload = {
+      sub: emp.id,
+      tenantId: emp.tenantId,
+      role: "EMPLOYEE",
+      email: emp.email,
+      name: emp.name,
+    };
+
+    const accessToken = await this.jwt.signAsync(payload, { expiresIn: "15m" });
+    const refreshToken = await this.jwt.signAsync(payload, { expiresIn: "30d" });
+
+    const refreshTokenHash = await this.hashToken(refreshToken);
+    await this.prisma.employee.update({
+      where: { id: emp.id },
+      data: { refreshTokenHash },
+    });
+
+    return {
+      ok: true,
+      accessToken,
+      refreshToken,
+      employee: {
+        id: emp.id,
+        name: emp.name,
+        cpf,
+        tenantId: emp.tenantId,
+        tenant: { slug: tenant.slug, name: tenant.name },
+      },
+    };
+  }
+
+  // =========================
+  // REFRESH (ADMIN)
   // =========================
   async refresh(refreshToken: string) {
     // 1) valida assinatura e extrai payload
@@ -166,6 +228,7 @@ export class AuthService {
     if (!tenant.isActive) {
       throw new ForbiddenException("Tenant desativado. Fale com o suporte.");
     }
+
     // 6) valida hash
     if (!user.refreshTokenHash) {
       throw new UnauthorizedException("Sem refresh salvo (faça login)");
@@ -175,21 +238,26 @@ export class AuthService {
     if (!ok) throw new UnauthorizedException("Refresh não confere (faça login)");
 
     // 7) gera novos tokens (rotação)
-const newPayload = this.buildPayload(user);
+    const newPayload = this.buildPayload(user);
 
-const newAccessToken = await this.jwt.signAsync(newPayload, { expiresIn: "15m" });
-const newRefreshToken = await this.jwt.signAsync(newPayload, { expiresIn: "30d" });
+    const newAccessToken = await this.jwt.signAsync(newPayload, {
+      expiresIn: "15m",
+    });
+    const newRefreshToken = await this.jwt.signAsync(newPayload, {
+      expiresIn: "30d",
+    });
 
-// 8) rotaciona hash no banco ✅
-const newHash = await this.hashToken(newRefreshToken);
+    // 8) rotaciona hash no banco ✅
+    const newHash = await this.hashToken(newRefreshToken);
 
-await this.prisma.user.update({
-  where: { id: user.id },
-  data: {
-    refreshTokenHash: newHash,
-    // refreshTokenExp: ... (REMOVER por enquanto)
-  },
-});
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        refreshTokenHash: newHash,
+        // refreshTokenExp: ... (REMOVER por enquanto)
+      },
+    });
+
     return {
       ok: true,
       accessToken: newAccessToken,
@@ -198,14 +266,28 @@ await this.prisma.user.update({
   }
 
   // =========================
-  // LOGOUT
+  // LOGOUT (ADMIN ou EMPLOYEE)
   // =========================
   async logout(userId: string) {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash: null },
-    });
+    // 1) tenta USER (admin)
+    try {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { refreshTokenHash: null },
+      });
+      return { ok: true };
+    } catch {}
 
+    // 2) tenta EMPLOYEE
+    try {
+      await this.prisma.employee.update({
+        where: { id: userId },
+        data: { refreshTokenHash: null },
+      });
+      return { ok: true };
+    } catch {}
+
+    // não achou em nenhum dos dois: não falha logout
     return { ok: true };
   }
 }
