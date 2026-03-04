@@ -30,35 +30,56 @@ export class DashboardService {
 
     // ✅ ADMIN GLOBAL (SUPER_ADMIN) → métricas globais
     if (role === "SUPER_ADMIN") {
-      const [tenantsActive, employeesActive, timeEntriesToday] = await Promise.all([
+      const [tenantsActive, employeesActive, timeEntriesToday, subsAgg] = await Promise.all([
         this.prisma.tenant.count({ where: { isActive: true } }),
         this.prisma.employee.count({ where: { isActive: true } }),
         this.prisma.timeEntry.count({ where: { punchedAt: { gte: dayStart, lte: dayEnd } } }),
+        this.prisma.subscription.groupBy({
+          by: ["status"],
+          _count: { _all: true },
+          where: { tenant: { isActive: true } },
+        }),
       ]);
+
+      const tenantsPaying = subsAgg.find((x) => x.status === "ACTIVE")?._count._all ?? 0;
+      const tenantsTrial = subsAgg.find((x) => x.status === "TRIAL")?._count._all ?? 0;
+      const tenantsPastDue = subsAgg.find((x) => x.status === "PAST_DUE")?._count._all ?? 0;
+
+      const activeSubs = await this.prisma.subscription.findMany({
+        where: { status: "ACTIVE", tenant: { isActive: true }, plan: { isActive: true } },
+        select: { plan: { select: { priceCents: true } } },
+      });
+
+      const mrrRealCents = activeSubs.reduce((sum, s) => sum + (s.plan?.priceCents ?? 0), 0);
 
       return {
         tenantsActive,
         employeesActive,
         timeEntriesToday,
-        revenueMonthlyEstimated: 0,
+        tenantsPaying,
+        tenantsTrial,
+        tenantsPastDue,
+        mrrRealCents,
       };
     }
 
-    // ✅ (opcional) Se um dia esse endpoint servir pra tenant
+    // ✅ se esse endpoint for usado por tenant (opcional)
     if (!tenantId) {
       return {
-        tenantsActive: 0,
         employeesActive: 0,
         timeEntriesToday: 0,
+        punchesMonth: 0,
         revenueMonthlyEstimated: 0,
         _warn: "tenantId não encontrado no token.",
       };
     }
 
+    const tid = tenantId;
+
     const [employeesActive, timeEntriesToday, punchesMonth] = await Promise.all([
-      this.prisma.employee.count({ where: { tenantId, isActive: true } }),
-      this.prisma.timeEntry.count({ where: { tenantId, punchedAt: { gte: dayStart, lte: dayEnd } } }),
-      this.prisma.timeEntry.count({ where: { tenantId, punchedAt: { gte: monthStart, lt: nextMonthStart } } }),
+      this.prisma.employee.count({ where: { tenantId: tid, isActive: true } }),
+      this.prisma.timeEntry.count({ where: { tenantId: tid, punchedAt: { gte: dayStart, lte: dayEnd } } }),
+      this.prisma.timeEntry.count({ where: { tenantId: tid, punchedAt: { gte: monthStart, lt: nextMonthStart } } }),
     ]);
 
     return {

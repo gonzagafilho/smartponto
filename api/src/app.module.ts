@@ -11,11 +11,10 @@ import { TimeentriesModule } from './timeentries/timeentries.module';
 import { UploadsModule } from "./uploads/uploads.module";
 import { SchedulesModule } from "./schedules/schedules.module";
 import { EmployeeSchedulesModule } from './employee-schedules/employee-schedules.module';
-import { AdminModule } from "./admin/admin.module";
-import { AdminTenantsModule } from "./admin/tenants/admin-tenants.module";
-
 import { ReportsModule } from "./reports/reports.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
+import { WorkHoursModule } from "./work-hours/work-hours.module";
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -33,8 +32,7 @@ import { DashboardModule } from "./dashboard/dashboard.module";
     EmployeeSchedulesModule,
     ReportsModule,
     DashboardModule,
-    AdminModule,
-    AdminTenantsModule,
+    WorkHoursModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,16 +1,29 @@
-import 'dotenv/config';
-import { PrismaClient, UserRole } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
+import "dotenv/config";
+import { PrismaClient, UserRole } from "@prisma/client";
+import * as bcrypt from "bcrypt";
 
 const prisma = new PrismaClient();
 
-async function main() {
-  const email = process.env.SEED_ADMIN_EMAIL || 'admin@smartponto.com';
-  const pass = process.env.SEED_ADMIN_PASSWORD || 'Admin@123456';
+type PlanSeed = {
+  code: string;
+  name: string;
+  priceCents: number;
+  maxEmployees: number | null; // null = ilimitado
+};
+
+const PLANS: PlanSeed[] = [
+  { code: "STARTER", name: "Starter", priceCents: 2990, maxEmployees: 10 },
+  { code: "PRO", name: "Pro", priceCents: 5990, maxEmployees: 30 },
+  { code: "ENTERPRISE", name: "Enterprise", priceCents: 9900, maxEmployees: null },
+];
+
+async function seedSuperAdmin() {
+  const email = process.env.SEED_ADMIN_EMAIL || "admin@smartponto.com";
+  const pass = process.env.SEED_ADMIN_PASSWORD || "Admin@123456";
 
   const exists = await prisma.user.findUnique({ where: { email } });
   if (exists) {
-    console.log('✅ SUPER_ADMIN já existe:', email);
+    console.log("✅ SUPER_ADMIN já existe:", email);
     return;
   }
 
@@ -18,14 +31,87 @@ async function main() {
 
   await prisma.user.create({
     data: {
-      name: 'Super Admin',
+      name: "Super Admin",
       email,
       passwordHash: hash,
       role: UserRole.SUPER_ADMIN,
     },
   });
 
-  console.log('✅ SUPER_ADMIN criado:', email, 'senha:', pass);
+  console.log("✅ SUPER_ADMIN criado:", email, "senha:", pass);
+}
+
+async function seedPlans() {
+  for (const p of PLANS) {
+    await prisma.plan.upsert({
+      where: { code: p.code },
+      create: {
+        code: p.code,
+        name: p.name,
+        priceCents: p.priceCents,
+        currency: "BRL",
+        isActive: true,
+        maxEmployees: p.maxEmployees,
+        maxWorksites: null,
+      },
+      update: {
+        name: p.name,
+        priceCents: p.priceCents,
+        currency: "BRL",
+        isActive: true,
+        maxEmployees: p.maxEmployees,
+        maxWorksites: null,
+      },
+    });
+  }
+
+  console.log(`✅ Plans SmartPonto upsert OK (${PLANS.length})`);
+}
+
+async function seedSubscriptionsForTenants() {
+  // default: STARTER em TRIAL
+  const defaultPlan = await prisma.plan.findUnique({ where: { code: "STARTER" } });
+  if (!defaultPlan) throw new Error('Plan "STARTER" não encontrado (seedPlans falhou).');
+
+  const tenants = await prisma.tenant.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true },
+  });
+
+  let created = 0;
+  let skipped = 0;
+
+  for (const t of tenants) {
+    const hasSub = await prisma.subscription.findFirst({
+      where: { tenantId: t.id },
+      select: { id: true },
+    });
+
+    if (hasSub) {
+      skipped++;
+      continue;
+    }
+
+    await prisma.subscription.create({
+      data: {
+        tenantId: t.id,
+        planId: defaultPlan.id,
+        status: "TRIAL",
+        startedAt: new Date(),
+        trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 dias
+      },
+    });
+
+    created++;
+  }
+
+  console.log(`✅ Subscriptions (TRIAL): criadas=${created}, já existiam=${skipped}`);
+}
+
+async function main() {
+  await seedSuperAdmin();
+  await seedPlans();
+  await seedSubscriptionsForTenants();
 }
 
 main()

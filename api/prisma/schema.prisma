@@ -33,6 +33,68 @@ enum PunchType {
   OUT
 }
 
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model Plan {
+  id         String          @id @default(cuid())
+  code       String          @unique // ex: BASIC_300, PRO_500
+  name       String
+  interval   BillingInterval @default(MONTHLY)
+  priceCents Int // 7899 = R$78,99
+  currency   String          @default("BRL")
+  isActive   Boolean         @default(true)
+
+  // limites (pra vender valor)
+  maxEmployees Int?
+  maxWorksites Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  planId String
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  status SubscriptionStatus @default(TRIAL)
+
+  startedAt          DateTime  @default(now())
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+
+  canceledAt DateTime?
+
+  // gateway (pra Stripe/MercadoPago depois)
+  provider               String? // "MERCADOPAGO" | "STRIPE"
+  providerCustomerId     String?
+  providerSubscriptionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([planId])
+  @@index([status])
+  @@index([tenantId, status])
+}
+
 model Tenant {
   id               String          @id @default(cuid())
   name             String
@@ -52,6 +114,8 @@ model Tenant {
   schedules         Schedule[]
   employeeSchedules EmployeeSchedule[]
   monthlySummaries  MonthlySummary[]
+
+  subscriptions Subscription[]
 }
 
 model User {
@@ -79,6 +143,8 @@ model Employee {
   cpf   String
   phone String?
   email String?
+
+  refreshTokenHash String?
 
   /**
    * Mantemos esses campos porque você já usa no cadastro atual.
@@ -203,6 +269,8 @@ model Schedule {
   maxSpanHours  Int?
 
   isActive Boolean @default(true)
+
+  refreshTokenHash String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

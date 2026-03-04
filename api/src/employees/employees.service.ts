@@ -12,6 +12,23 @@ export class EmployeesService {
     });
   }
 
+  /**
+   * Retorna a assinatura ativa do tenant (TRIAL ou ACTIVE) com o plano.
+   * Usado para verificar limite de funcionários antes de criar.
+   */
+  private async getActiveSubscriptionWithPlan(tenantId: string) {
+    return this.prisma.subscription.findFirst({
+      where: {
+        tenantId,
+        status: { in: ['TRIAL', 'ACTIVE'] },
+      },
+      orderBy: { startedAt: 'desc' },
+      include: {
+        plan: { select: { code: true, name: true, maxEmployees: true } },
+      },
+    });
+  }
+
   async create(tenantId: string, data: any) {
     if (!data?.name || !data?.cpf || !data?.workStart || !data?.workEnd) {
       throw new BadRequestException('Campos obrigatórios: name, cpf, workStart, workEnd');
@@ -19,6 +36,26 @@ export class EmployeesService {
 
     const cpf = String(data.cpf).replace(/\D/g, '');
     if (cpf.length !== 11) throw new BadRequestException('CPF inválido');
+
+    const subscription = await this.getActiveSubscriptionWithPlan(tenantId);
+    if (!subscription) {
+      throw new BadRequestException(
+        'Nenhuma assinatura ativa encontrada para esta empresa. Entre em contato com o suporte.',
+      );
+    }
+
+    const { plan } = subscription;
+    if (plan.maxEmployees != null) {
+      const currentCount = await this.prisma.employee.count({
+        where: { tenantId },
+      });
+      if (currentCount >= plan.maxEmployees) {
+        throw new BadRequestException(
+          `Limite de funcionários do plano ${plan.name} (${plan.maxEmployees}) atingido. ` +
+            'Faça upgrade do plano para adicionar mais funcionários.',
+        );
+      }
+    }
 
     try {
       const emp = await this.prisma.employee.create({
