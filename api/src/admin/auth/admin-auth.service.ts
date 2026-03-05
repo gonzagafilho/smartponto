@@ -37,10 +37,11 @@ export class AdminAuthService {
       throw new UnauthorizedException("Credenciais inválidas");
     }
 
-    // 3️⃣ permite SOMENTE SUPER_ADMIN
-    if (user.role !== "SUPER_ADMIN") {
+    // 3️⃣ permite somente admins globais (SUPER_ADMIN ou ADMIN_GLOBAL)
+    const adminGlobalRoles = ["SUPER_ADMIN", "ADMIN_GLOBAL"];
+    if (!adminGlobalRoles.includes(user.role)) {
       throw new UnauthorizedException(
-        "Acesso restrito ao SUPER_ADMIN",
+        "Acesso restrito a administradores globais",
       );
     }
 
