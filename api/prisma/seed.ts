@@ -9,12 +9,13 @@ type PlanSeed = {
   name: string;
   priceCents: number;
   maxEmployees: number | null; // null = ilimitado
+  maxWorksites: number | null; // null = ilimitado
 };
 
 const PLANS: PlanSeed[] = [
-  { code: "STARTER", name: "Starter", priceCents: 2990, maxEmployees: 10 },
-  { code: "PRO", name: "Pro", priceCents: 5990, maxEmployees: 30 },
-  { code: "ENTERPRISE", name: "Enterprise", priceCents: 9900, maxEmployees: null },
+  { code: "STARTER", name: "Starter", priceCents: 2990, maxEmployees: 10, maxWorksites: 2 },
+  { code: "PRO", name: "Pro", priceCents: 5990, maxEmployees: 30, maxWorksites: 5 },
+  { code: "ENTERPRISE", name: "Enterprise", priceCents: 9900, maxEmployees: null, maxWorksites: null },
 ];
 
 async function seedSuperAdmin() {
@@ -52,7 +53,7 @@ async function seedPlans() {
         currency: "BRL",
         isActive: true,
         maxEmployees: p.maxEmployees,
-        maxWorksites: null,
+        maxWorksites: p.maxWorksites,
       },
       update: {
         name: p.name,
@@ -60,7 +61,7 @@ async function seedPlans() {
         currency: "BRL",
         isActive: true,
         maxEmployees: p.maxEmployees,
-        maxWorksites: null,
+        maxWorksites: p.maxWorksites,
       },
     });
   }
@@ -108,10 +109,50 @@ async function seedSubscriptionsForTenants() {
   console.log(`✅ Subscriptions (TRIAL): criadas=${created}, já existiam=${skipped}`);
 }
 
+/** Garante que o tenant do user admin@empresa.com tenha Subscription ACTIVE no plano PRO. */
+async function seedTenantAdminPro() {
+  const tenantAdminEmail = process.env.SEED_TENANT_ADMIN_EMAIL || "admin@empresa.com";
+  const user = await prisma.user.findFirst({
+    where: { email: tenantAdminEmail },
+    select: { tenantId: true },
+  });
+  if (!user?.tenantId) {
+    console.log(`⏭️ Tenant admin: user "${tenantAdminEmail}" não encontrado ou sem tenantId, pulando.`);
+    return;
+  }
+
+  const proPlan = await prisma.plan.findUnique({ where: { code: "PRO" } });
+  if (!proPlan) throw new Error('Plan "PRO" não encontrado (seedPlans falhou).');
+
+  const existing = await prisma.subscription.findFirst({
+    where: { tenantId: user.tenantId },
+    orderBy: { startedAt: "desc" },
+  });
+
+  if (existing) {
+    await prisma.subscription.update({
+      where: { id: existing.id },
+      data: { planId: proPlan.id, status: "ACTIVE" },
+    });
+    console.log(`✅ Tenant admin (${tenantAdminEmail}): assinatura atualizada para PRO ACTIVE.`);
+  } else {
+    await prisma.subscription.create({
+      data: {
+        tenantId: user.tenantId,
+        planId: proPlan.id,
+        status: "ACTIVE",
+        startedAt: new Date(),
+      },
+    });
+    console.log(`✅ Tenant admin (${tenantAdminEmail}): assinatura criada PRO ACTIVE.`);
+  }
+}
+
 async function main() {
   await seedSuperAdmin();
   await seedPlans();
   await seedSubscriptionsForTenants();
+  await seedTenantAdminPro();
 }
 
 main()
