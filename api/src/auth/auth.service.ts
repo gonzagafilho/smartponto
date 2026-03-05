@@ -1,293 +1,181 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  ForbiddenException,
-} from "@nestjs/common";
-import * as bcrypt from "bcryptjs";
-import { PrismaService } from "../prisma/prisma.service";
-import { JwtService } from "@nestjs/jwt";
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcrypt';
+import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
+
+type Tokens = { accessToken: string; refreshToken: string };
 
 @Injectable()
 export class AuthService {
   constructor(
-    private prisma: PrismaService,
-    private jwt: JwtService,
+    private readonly prisma: PrismaService,
+    private readonly cfg: ConfigService,
   ) {}
 
-  // =========================
-  // Helpers Refresh Token
-  // =========================
-  private async hashToken(token: string) {
-    const salt = await bcrypt.genSalt(10);
-    return bcrypt.hash(token, salt);
+  private signTokens(payload: any): Tokens {
+    const accessSecret = this.cfg.get<string>('JWT_ACCESS_SECRET') || '';
+    const refreshSecret = this.cfg.get<string>('JWT_REFRESH_SECRET') || '';
+
+    // Logs seguros (NÃO expõem o secret)
+    console.log('[SIGN] accessSecret loaded:', !!accessSecret);
+    console.log(
+      '[SIGN] accessSecret sha1:',
+      crypto.createHash('sha1').update(accessSecret).digest('hex'),
+    );
+    console.log('[SIGN] refreshSecret loaded:', !!refreshSecret);
+    console.log(
+      '[SIGN] refreshSecret sha1:',
+      crypto.createHash('sha1').update(refreshSecret).digest('hex'),
+    );
+
+    if (!accessSecret || !refreshSecret) {
+      throw new UnauthorizedException('JWT secrets não configurados');
+    }
+
+    const accessToken = jwt.sign(payload, accessSecret, { expiresIn: '15m' });
+    const refreshToken = jwt.sign(payload, refreshSecret, { expiresIn: '30d' });
+
+    return { accessToken, refreshToken };
   }
 
-  private async verifyTokenHash(token: string, hash: string) {
-    return bcrypt.compare(token, hash);
-  }
-
-  private refreshExpDate(days = 30) {
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    return d;
-  }
-
-  private buildPayload(user: {
-    id: string;
-    tenantId: string | null;
-    role: string;
-    email: string;
-    name: string | null;
-  }) {
-    return {
-      sub: user.id,
-      tenantId: user.tenantId,
-      role: user.role,
-      email: user.email,
-      name: user.name,
-    };
-  }
-
-  // =========================
-  // LOGIN (ADMIN)
-  // =========================
   async login(email: string, password: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        tenantId: true,
-        passwordHash: true,
-      },
-    });
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new UnauthorizedException('Credenciais inválidas');
 
-    // 1) valida user
-    if (!user) throw new UnauthorizedException("Credenciais inválidas");
-
-    // 2) valida senha
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) throw new UnauthorizedException("Credenciais inválidas");
+    if (!ok) throw new UnauthorizedException('Credenciais inválidas');
 
-    // 3) valida tenantId
-    if (!user.tenantId) {
-      throw new UnauthorizedException("Usuário sem tenant vinculado");
-    }
+    // ✅ payload padronizado: tenantId + companyId (compatibilidade)
+    const payload = {
+      sub: user.id,
+      role: user.role,
+      tenantId: user.tenantId ?? null,
+      companyId: user.tenantId ?? null,
+    };
 
-    // 4) busca tenant e valida isActive
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: user.tenantId },
-      select: { isActive: true, slug: true, name: true },
-    });
+    const tokens = this.signTokens(payload);
 
-    if (!tenant) throw new UnauthorizedException("Tenant não encontrado");
-
-    if (!tenant.isActive) {
-      throw new ForbiddenException("Tenant desativado. Fale com o suporte.");
-    }
-
-    // 5) tokens
-    const payload = this.buildPayload(user);
-
-    const accessToken = await this.jwt.signAsync(payload, { expiresIn: "15m" });
-    const refreshToken = await this.jwt.signAsync(payload, { expiresIn: "30d" });
-
-    // 6) salvar hash do refresh no banco ✅
-    const refreshTokenHash = await this.hashToken(refreshToken);
+    const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { refreshTokenHash },
+      data: { refreshTokenHash: refreshHash },
     });
 
     return {
       ok: true,
-      accessToken,
-      refreshToken,
       user: {
         id: user.id,
-        email: user.email,
         name: user.name,
         role: user.role,
         tenantId: user.tenantId,
-        tenant: {
-          slug: tenant.slug,
-          name: tenant.name,
-        },
       },
+      ...tokens,
     };
   }
 
-  // =========================
-  // EMPLOYEE LOGIN (CPF)
-  // =========================
+  /**
+   * Refresh por refreshToken (controller envia só o token; userId vem do payload).
+   */
+  async refresh(refreshToken: string) {
+    const refreshSecret = this.cfg.get<string>('JWT_REFRESH_SECRET') || '';
+    if (!refreshSecret) throw new UnauthorizedException('JWT não configurado');
+
+    let payload: { sub: string; role?: string; tenantId?: string | null };
+    try {
+      payload = jwt.verify(refreshToken, refreshSecret) as any;
+    } catch {
+      throw new UnauthorizedException('Sessão inválida');
+    }
+    const userId = payload?.sub;
+    if (!userId) throw new UnauthorizedException('Sessão inválida');
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.refreshTokenHash) {
+      throw new UnauthorizedException('Sessão inválida');
+    }
+
+    const ok = await bcrypt.compare(refreshToken, user.refreshTokenHash);
+    if (!ok) throw new UnauthorizedException('Sessão inválida');
+
+    const newPayload = {
+      sub: user.id,
+      role: user.role,
+      tenantId: user.tenantId ?? null,
+      companyId: user.tenantId ?? null,
+    };
+
+    const tokens = this.signTokens(newPayload);
+
+    const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { refreshTokenHash: refreshHash },
+    });
+
+    return {
+      ok: true,
+      ...tokens,
+    };
+  }
+
+  /**
+   * Login do funcionário por CPF (sem senha; usado pelo app de ponto).
+   */
   async employeeLogin(cpfRaw: string) {
-    const cpf = String(cpfRaw || "").replace(/\D/g, "");
-    if (cpf.length !== 11) throw new UnauthorizedException("CPF inválido");
+    const cpf = String(cpfRaw ?? '').replace(/\D/g, '');
+    if (cpf.length !== 11) throw new UnauthorizedException('CPF inválido');
 
     const emp = await this.prisma.employee.findFirst({
-      where: { cpf },
-      select: {
-        id: true,
-        tenantId: true,
-        name: true,
-        email: true,
-        isActive: true,
-        refreshTokenHash: true,
-      },
+      where: { cpf, isActive: true },
+      select: { id: true, name: true, cpf: true, tenantId: true },
     });
-
-    if (!emp) throw new UnauthorizedException("CPF não encontrado");
-    if (!emp.isActive) throw new ForbiddenException("Funcionário desativado");
-    if (!emp.tenantId)
-      throw new UnauthorizedException("Funcionário sem tenant vinculado");
-
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: emp.tenantId },
-      select: { isActive: true, slug: true, name: true },
-    });
-
-    if (!tenant) throw new UnauthorizedException("Tenant não encontrado");
-    if (!tenant.isActive)
-      throw new ForbiddenException("Tenant desativado. Fale com o suporte.");
+    if (!emp) throw new UnauthorizedException('CPF não encontrado ou inativo');
 
     const payload = {
       sub: emp.id,
-      tenantId: emp.tenantId,
-      role: "EMPLOYEE",
-      email: emp.email,
-      name: emp.name,
+      role: 'EMPLOYEE',
+      tenantId: emp.tenantId ?? null,
+      companyId: emp.tenantId ?? null,
     };
 
-    const accessToken = await this.jwt.signAsync(payload, { expiresIn: "15m" });
-    const refreshToken = await this.jwt.signAsync(payload, { expiresIn: "30d" });
+    const tokens = this.signTokens(payload);
 
-    const refreshTokenHash = await this.hashToken(refreshToken);
+    const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     await this.prisma.employee.update({
       where: { id: emp.id },
-      data: { refreshTokenHash },
+      data: { refreshTokenHash: refreshHash },
     });
 
     return {
       ok: true,
-      accessToken,
-      refreshToken,
-      employee: {
-        id: emp.id,
-        name: emp.name,
-        cpf,
-        tenantId: emp.tenantId,
-        tenant: { slug: tenant.slug, name: tenant.name },
-      },
+      employee: { id: emp.id, name: emp.name, cpf: emp.cpf, tenantId: emp.tenantId },
+      ...tokens,
     };
   }
 
-  // =========================
-  // REFRESH (ADMIN)
-  // =========================
-  async refresh(refreshToken: string) {
-    // 1) valida assinatura e extrai payload
-    let payload: any;
-    try {
-      payload = await this.jwt.verifyAsync(refreshToken);
-    } catch (e) {
-      throw new UnauthorizedException("Refresh token inválido");
-    }
-
-    const userId = payload?.sub;
-    if (!userId) throw new UnauthorizedException("Refresh token inválido");
-
-    // 2) busca user
+  async logout(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        tenantId: true,
-        refreshTokenHash: true,
-      },
+      select: { id: true },
     });
-
-    if (!user) throw new UnauthorizedException("Usuário não encontrado");
-
-    // 3) valida tenantId
-    if (!user.tenantId) {
-      throw new UnauthorizedException("Usuário sem tenant vinculado");
-    }
-
-    // 4) tenant ativo
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: user.tenantId },
-      select: { isActive: true },
-    });
-
-    if (!tenant) throw new UnauthorizedException("Tenant não encontrado");
-    if (!tenant.isActive) {
-      throw new ForbiddenException("Tenant desativado. Fale com o suporte.");
-    }
-
-    // 6) valida hash
-    if (!user.refreshTokenHash) {
-      throw new UnauthorizedException("Sem refresh salvo (faça login)");
-    }
-
-    const ok = await this.verifyTokenHash(refreshToken, user.refreshTokenHash);
-    if (!ok) throw new UnauthorizedException("Refresh não confere (faça login)");
-
-    // 7) gera novos tokens (rotação)
-    const newPayload = this.buildPayload(user);
-
-    const newAccessToken = await this.jwt.signAsync(newPayload, {
-      expiresIn: "15m",
-    });
-    const newRefreshToken = await this.jwt.signAsync(newPayload, {
-      expiresIn: "30d",
-    });
-
-    // 8) rotaciona hash no banco ✅
-    const newHash = await this.hashToken(newRefreshToken);
-
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        refreshTokenHash: newHash,
-        // refreshTokenExp: ... (REMOVER por enquanto)
-      },
-    });
-
-    return {
-      ok: true,
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-    };
-  }
-
-  // =========================
-  // LOGOUT (ADMIN ou EMPLOYEE)
-  // =========================
-  async logout(userId: string) {
-    // 1) tenta USER (admin)
-    try {
+    if (user) {
       await this.prisma.user.update({
         where: { id: userId },
         data: { refreshTokenHash: null },
       });
-      return { ok: true };
-    } catch {}
-
-    // 2) tenta EMPLOYEE
-    try {
+    }
+    const emp = await this.prisma.employee.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (emp) {
       await this.prisma.employee.update({
         where: { id: userId },
         data: { refreshTokenHash: null },
       });
-      return { ok: true };
-    } catch {}
-
-    // não achou em nenhum dos dois: não falha logout
+    }
     return { ok: true };
   }
 }
