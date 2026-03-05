@@ -1,12 +1,22 @@
 import { Controller, Get, Query, Req, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { RolesGuard } from "../common/guards/roles.guard";
+import { Roles } from "../common/decorators/roles.decorator";
 import { ReportsService } from "./reports.service";
 
 @UseGuards(JwtAuthGuard)
 @Controller("reports")
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
+
+  @Get("inconsistencies")
+  @UseGuards(RolesGuard)
+  @Roles("TENANT_ADMIN")
+  getInconsistencies(@Req() req: any, @Query("month") month: string) {
+    const tenantId = req.user?.tenantId as string;
+    return this.reports.getInconsistencies(tenantId, month ?? "");
+  }
 
   @Get("timesheet")
   async timesheet(

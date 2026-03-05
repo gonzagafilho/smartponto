@@ -39,9 +39,72 @@ function minutesToHHMM(totalMinutes: number): string {
   return `${hh}:${mm}`;
 }
 
+function parseYearMonthOrThrow(v: string): string {
+  const s = (v || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(s)) throw new BadRequestException("month inválido. Use YYYY-MM");
+  const year = Number(s.slice(0, 4));
+  const month = Number(s.slice(5, 7));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    throw new BadRequestException("month inválido. Use YYYY-MM");
+  }
+  return s;
+}
+
 @Injectable()
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Inconsistências do mês a partir de MonthlySummary (não altera TimeEntry nem punch).
+   * Lista por funcionário: inconsistenciesCount + detalhes extraídos do detailsJson.
+   */
+  async getInconsistencies(tenantId: string, month: string) {
+    const ym = parseYearMonthOrThrow(month);
+
+    const summaries = await this.prisma.monthlySummary.findMany({
+      where: { tenantId, yearMonth: ym },
+      include: { employee: { select: { id: true, name: true } } },
+      orderBy: { employee: { name: "asc" } },
+    });
+
+    const byEmployee: Array<{
+      employeeId: string;
+      employeeName: string;
+      inconsistenciesCount: number;
+      details: Array<{ date: string; flags: string[] }> | null;
+    }> = [];
+
+    let totalInconsistencies = 0;
+
+    for (const s of summaries) {
+      let details: Array<{ date: string; flags: string[] }> | null = null;
+      const json = s.detailsJson as { days?: Array<{ date: string; flags?: string[] }> } | null;
+      if (json?.days && Array.isArray(json.days)) {
+        details = json.days
+          .filter((d) => d.flags && d.flags.length > 0)
+          .map((d) => ({ date: d.date, flags: d.flags ?? [] }));
+      }
+
+      byEmployee.push({
+        employeeId: s.employeeId,
+        employeeName: s.employee.name,
+        inconsistenciesCount: s.inconsistenciesCount,
+        details,
+      });
+      totalInconsistencies += s.inconsistenciesCount;
+    }
+
+    const totalEmployeesWithInconsistencies = byEmployee.filter((e) => e.inconsistenciesCount > 0).length;
+
+    return {
+      month: ym,
+      totals: {
+        totalInconsistencies,
+        totalEmployeesWithInconsistencies,
+      },
+      byEmployee,
+    };
+  }
 
   async timesheet(params: { tenantId: string; employeeId: string; from: string; to: string }) {
     const tenantId = params.tenantId;
