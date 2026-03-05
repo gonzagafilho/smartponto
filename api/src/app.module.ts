@@ -14,6 +14,10 @@ import { EmployeeSchedulesModule } from './employee-schedules/employee-schedules
 import { ReportsModule } from "./reports/reports.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { WorkHoursModule } from "./work-hours/work-hours.module";
+import { ClosingsModule } from "./closings/closings.module";
+import { InconsistenciesModule } from "./inconsistencies/inconsistencies.module";
+import { AnalyticsModule } from "./analytics/analytics.module";
+import { AdminModule } from "./admin/admin.module";
 
 @Module({
   imports: [
@@ -33,6 +37,10 @@ import { WorkHoursModule } from "./work-hours/work-hours.module";
     ReportsModule,
     DashboardModule,
     WorkHoursModule,
+    ClosingsModule,
+    InconsistenciesModule,
+    AnalyticsModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

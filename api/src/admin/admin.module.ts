@@ -10,11 +10,14 @@ import { AdminJwtStrategy } from "./auth/admin-jwt.strategy";
 
 import { AdminTenantsController } from "./tenants/admin-tenants.controller";
 import { AdminTenantsService } from "./tenants/admin-tenants.service";
+import { AdminReportsController } from "./reports/admin-reports.controller";
+import { ReportsModule } from "../reports/reports.module";
 
 @Module({
   imports: [
     ConfigModule,
     PassportModule,
+    ReportsModule,
     JwtModule.registerAsync({
   imports: [ConfigModule],
   inject: [ConfigService],
@@ -29,7 +32,7 @@ import { AdminTenantsService } from "./tenants/admin-tenants.service";
   },
 }),
   ],
-  controllers: [AdminAuthController, AdminTenantsController],
+  controllers: [AdminAuthController, AdminTenantsController, AdminReportsController],
   providers: [PrismaService, AdminAuthService, AdminTenantsService, AdminJwtStrategy],
 })
 export class AdminModule {}
