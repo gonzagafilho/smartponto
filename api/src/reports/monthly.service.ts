@@ -382,4 +382,243 @@ export class MonthlyService {
       closedAt: updated.closedAt ? updated.closedAt.toISOString() : null,
     };
   }
+
+  /**
+   * Fechamento mensal por tenant (1 clique): garante summary para cada employee ativo,
+   * depois seta closedAt = now() em todos do yearMonth.
+   */
+  async closeMonth(params: { tenantId: string; yearMonth: string }) {
+    const { tenantId, yearMonth } = params;
+    const { ym } = parseYearMonthOrThrow(yearMonth);
+
+    const employees = await this.prisma.employee.findMany({
+      where: { tenantId, isActive: true },
+      select: { id: true },
+    });
+
+    const closedEmployees: string[] = [];
+    const alreadyClosed: string[] = [];
+
+    for (const emp of employees) {
+      await this.monthlySummary({ tenantId, employeeId: emp.id, month: ym });
+
+      const existing = await this.prisma.monthlySummary.findUnique({
+        where: {
+          uniq_monthly_summary: { tenantId, employeeId: emp.id, yearMonth: ym },
+        },
+        select: { closedAt: true },
+      });
+
+      if (!existing) continue;
+
+      if (existing.closedAt) {
+        alreadyClosed.push(emp.id);
+      } else {
+        await this.prisma.monthlySummary.update({
+          where: {
+            uniq_monthly_summary: { tenantId, employeeId: emp.id, yearMonth: ym },
+          },
+          data: { closedAt: new Date() },
+        });
+        closedEmployees.push(emp.id);
+      }
+    }
+
+    return {
+      ok: true,
+      yearMonth: ym,
+      closedEmployees,
+      alreadyClosed,
+    };
+  }
+
+  /**
+   * Reabre o mês (closedAt = null) para todos os summaries do tenant no yearMonth. Somente admin.
+   */
+  async reopenMonth(params: { tenantId: string; yearMonth: string }) {
+    const { tenantId, yearMonth } = params;
+    const { ym } = parseYearMonthOrThrow(yearMonth);
+
+    const result = await this.prisma.monthlySummary.updateMany({
+      where: { tenantId, yearMonth: ym },
+      data: { closedAt: null },
+    });
+
+    return {
+      ok: true,
+      yearMonth: ym,
+      reopenedCount: result.count,
+    };
+  }
+
+  /**
+   * Gera PDF A4 do resumo mensal baseado em MonthlySummary fechados.
+   * Se não houver summaries com closedAt no mês, retorna 400 pedindo fechar primeiro.
+   */
+  async getMonthlySummaryPdfBuffer(tenantId: string, month: string): Promise<Buffer> {
+    const { ym } = parseYearMonthOrThrow(month);
+
+    const summaries = await this.prisma.monthlySummary.findMany({
+      where: {
+        tenantId,
+        yearMonth: ym,
+        closedAt: { not: null },
+      },
+      include: { employee: { select: { name: true, cpf: true } } },
+      orderBy: { employee: { name: "asc" } },
+    });
+
+    if (summaries.length === 0) {
+      throw new BadRequestException(
+        "Mês não está fechado ou não há resumos fechados. Feche o mês antes de gerar o PDF.",
+      );
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        name: true,
+        logoUrl: true,
+        settings: { select: { targetMonthlyMinutes: true } },
+      },
+    });
+    const tenantName = tenant?.name ?? "Empresa";
+    const workloadHours =
+      tenant?.settings?.targetMonthlyMinutes != null
+        ? Math.round(tenant.settings.targetMonthlyMinutes / 60)
+        : 220;
+
+    let logoBuffer: Buffer | null = null;
+    if (tenant?.logoUrl) {
+      try {
+        const res = await fetch(tenant.logoUrl);
+        if (res.ok) logoBuffer = Buffer.from(await res.arrayBuffer());
+      } catch {
+        // não quebrar o PDF se a logo falhar
+      }
+    }
+
+    return new Promise((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const PDFDocument = require("pdfkit");
+      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks: Buffer[] = [];
+      doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageWidth = doc.page.width - 100;
+      const rightX = 50 + pageWidth;
+      const col = (n: number, total: number): number => 50 + (pageWidth * n) / total;
+
+      let y = 50;
+
+      // Logo (canto superior direito), se existir
+      if (logoBuffer && logoBuffer.length > 0) {
+        try {
+          const logoW = 80;
+          const logoH = 40;
+          doc.image(logoBuffer, rightX - logoW, y, { width: logoW, height: logoH });
+        } catch {
+          // ignora erro de imagem
+        }
+      }
+
+      // Cabeçalho profissional
+      doc.fontSize(22).font("Helvetica-Bold").text("SmartPonto", 50, y);
+      y += 22;
+      doc.fontSize(12).font("Helvetica").text("RESUMO MENSAL DE PONTO", 50, y);
+      y += 20;
+      doc.fontSize(10).font("Helvetica");
+      doc.text(`Empresa: ${tenantName}`, 50, y);
+      y += 14;
+      doc.text(`Mês: ${ym}`, 50, y);
+      y += 14;
+      const geradoEm = new Date().toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      doc.text(`Gerado em: ${geradoEm}`, 50, y);
+      y += 20;
+
+      // Carga horária mensal
+      doc.fontSize(10).text(`Carga horária mensal: ${workloadHours}h`, 50, y);
+      y += 22;
+
+      doc.moveDown(0.5);
+
+      // Tabela: Funcionário | CPF | Trabalhado | Extra | Débito | Inconsistências (6 colunas)
+      doc.fontSize(10).font("Helvetica-Bold");
+      doc.text("Funcionário", col(0, 6), y);
+      doc.text("CPF", col(1, 6), y);
+      doc.text("Trabalhado", col(2, 6), y);
+      doc.text("Extra", col(3, 6), y);
+      doc.text("Débito", col(4, 6), y);
+      doc.text("Inconsist.", col(5, 6), y);
+      y += 18;
+      doc.moveTo(50, y).lineTo(rightX, y).stroke();
+      y += 12;
+      doc.font("Helvetica").fontSize(10);
+
+      function formatCpf(cpf: string | null | undefined): string {
+        if (!cpf || typeof cpf !== "string") return "—";
+        const d = cpf.replace(/\D/g, "");
+        if (d.length !== 11) return cpf.slice(0, 14);
+        return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+      }
+
+      for (const s of summaries) {
+        if (y > 700) {
+          doc.addPage({ size: "A4", margin: 50 });
+          y = 50;
+        }
+        const workedHHMM = minutesToHHMM(s.workedMinutes);
+        const extraHHMM = minutesToHHMM(s.extraMinutes);
+        const debitHHMM = minutesToHHMM(s.debitMinutes);
+        doc
+          .text((s.employee.name || "—").slice(0, 28), col(0, 6), y)
+          .text(formatCpf(s.employee.cpf), col(1, 6), y)
+          .text(workedHHMM, col(2, 6), y)
+          .text(extraHHMM, col(3, 6), y)
+          .text(debitHHMM, col(4, 6), y)
+          .text(String(s.inconsistenciesCount), col(5, 6), y);
+        y += 16;
+      }
+
+      y += 10;
+      doc.moveTo(50, y).lineTo(rightX, y).stroke();
+      y += 20;
+
+      // Totais em destaque (centralizado, negrito)
+      const totalWorked = summaries.reduce((a, s) => a + s.workedMinutes, 0);
+      const totalExtra = summaries.reduce((a, s) => a + s.extraMinutes, 0);
+      const totalDebit = summaries.reduce((a, s) => a + s.debitMinutes, 0);
+      doc.font("Helvetica-Bold").fontSize(11);
+      const totalLines = [
+        `Funcionários: ${summaries.length}`,
+        `Trabalhado: ${minutesToHHMM(totalWorked)}`,
+        `Extra: ${minutesToHHMM(totalExtra)}`,
+        `Débito: ${minutesToHHMM(totalDebit)}`,
+      ];
+      for (const line of totalLines) {
+        doc.text(line, 50, y, { width: pageWidth, align: "center" });
+        y += 16;
+      }
+
+      y += 28;
+
+      // Assinaturas no rodapé
+      doc.font("Helvetica").fontSize(10);
+      doc.moveTo(50, y).lineTo(50 + 180, y).stroke();
+      doc.text("Responsável RH", 50, y + 8, { width: 180 });
+      y += 36;
+      doc.moveTo(50, y).lineTo(50 + 180, y).stroke();
+      doc.text("Administrador", 50, y + 8, { width: 180 });
+
+      doc.end();
+    });
+  }
 }
